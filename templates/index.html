@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ResumeIQ — Smart Resume Analyser</title>
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
       --bg: #0a0a0f;
@@ -170,6 +171,39 @@
       display: none;
     }
 
+    .job-desc-section {
+      margin-top: 20px;
+    }
+
+    .job-desc-label {
+      display: block;
+      font-family: 'Syne', sans-serif;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    #job_desc {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.9rem;
+      resize: vertical;
+      min-height: 80px;
+      transition: border-color 0.3s ease;
+    }
+
+    #job_desc:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(124,106,247,0.1);
+    }
+
     .btn {
       display: inline-flex;
       align-items: center;
@@ -193,6 +227,22 @@
 
     .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(124,106,247,0.45); }
     .btn:active { transform: translateY(0); }
+
+    /* Error Message */
+    .error-message {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(248,113,113,0.1);
+      border: 1px solid rgba(248,113,113,0.3);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      animation: fadeUp 0.5s ease;
+    }
+
+    .error-icon { font-size: 1.2rem; }
+    .error-text { color: var(--error); font-weight: 500; }
 
     /* Results */
     .results { animation: fadeUp 0.6s ease both; }
@@ -384,6 +434,57 @@
 
     .skill-tag:hover { background: rgba(124,106,247,0.22); transform: scale(1.04); }
 
+    .skill-tag.missing { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.25); color: var(--error); }
+
+    /* Job Match */
+    .job-match-section { margin-bottom: 24px; }
+
+    .match-scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
+
+    .match-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .match-label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    .match-score {
+      font-family: 'Syne', sans-serif;
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .match-bar {
+      height: 8px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .match-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      transition: width 1.5s ease;
+      width: 0;
+    }
+
+    .missing-skills { margin-top: 20px; }
+    /* Chart */
+    .chart-section { margin-bottom: 24px; }
+
+    #scoreChart { max-width: 100%; height: auto; }
     /* Suggestions */
     .suggestions-list { display: flex; flex-direction: column; gap: 12px; }
 
@@ -459,11 +560,22 @@
           <div class="drop-sub">or click to browse — PDF only</div>
           <div class="file-selected" id="fileSelected">✔ File selected: <span id="fileName"></span></div>
         </div>
+        <div class="job-desc-section">
+          <label for="job_desc" class="job-desc-label">Job Description (Optional)</label>
+          <textarea name="job_desc" id="job_desc" placeholder="Paste the job description here to get a match score..." rows="4"></textarea>
+        </div>
         <button type="submit" class="btn">⚡ Analyse Resume</button>
       </form>
     </div>
 
     <!-- Results -->
+    {% if error %}
+    <div class="error-message">
+      <span class="error-icon">⚠️</span>
+      <span class="error-text">{{ error }}</span>
+    </div>
+    {% endif %}
+
     {% if result %}
     <div class="results">
 
@@ -525,6 +637,14 @@
         </div>
       </div>
 
+      <!-- Score Breakdown Chart -->
+      <div class="chart-section">
+        <div class="skills-section">
+          <div class="section-title">📊 ATS Score Breakdown</div>
+          <canvas id="scoreChart" width="400" height="200"></canvas>
+        </div>
+      </div>
+
       <!-- Stats Row -->
      
       <div class="stats-row">
@@ -549,6 +669,41 @@
           <div class="stat-lbl">Suggestions</div>
         </div>
       </div>
+
+      {% if result.job_match %}
+      <!-- Job Match Section -->
+      <div class="job-match-section">
+        <div class="skills-section">
+          <div class="section-title">🎯 Job Match Analysis</div>
+          <div class="match-scores">
+            <div class="match-card">
+              <div class="match-label">Overall Match</div>
+              <div class="match-score">{{ "%.1f"|format(result.job_match.overall_match) }}%</div>
+              <div class="match-bar">
+                <div class="match-fill" style="width: {{ result.job_match.overall_match }}%;"></div>
+              </div>
+            </div>
+            <div class="match-card">
+              <div class="match-label">Skills Match</div>
+              <div class="match-score">{{ "%.1f"|format(result.job_match.skill_match) }}%</div>
+              <div class="match-bar">
+                <div class="match-fill" style="width: {{ result.job_match.skill_match }}%;"></div>
+              </div>
+            </div>
+          </div>
+          {% if result.job_match.missing_skills %}
+          <div class="missing-skills">
+            <div class="cat-label">Missing Skills</div>
+            <div class="skill-tags">
+              {% for skill in result.job_match.missing_skills %}
+              <span class="skill-tag missing">{{ skill }}</span>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
 
       <!-- Tabs -->
       <div class="tabs">
@@ -628,6 +783,59 @@
         bar.style.width = '0';
         setTimeout(() => { bar.style.width = w; }, 200);
       });
+
+      // Animate match bars
+      document.querySelectorAll('.match-fill').forEach(bar => {
+        const w = bar.style.width;
+        bar.style.width = '0';
+        setTimeout(() => { bar.style.width = w; }, 500);
+      });
+
+      // Create chart if result exists
+      {% if result %}
+      const ctx = document.getElementById('scoreChart').getContext('2d');
+      const breakdown = {{ result.breakdown | tojson }};
+      const labels = Object.keys(breakdown);
+      const scores = labels.map(key => breakdown[key].score);
+      const maxes = labels.map(key => breakdown[key].max);
+
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Score',
+            data: scores,
+            backgroundColor: 'rgba(124, 106, 247, 0.8)',
+            borderColor: 'rgba(124, 106, 247, 1)',
+            borderWidth: 1
+          }, {
+            label: 'Max',
+            data: maxes,
+            backgroundColor: 'rgba(110, 110, 138, 0.3)',
+            borderColor: 'rgba(110, 110, 138, 0.5)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(255,255,255,0.1)' },
+              ticks: { color: '#e8e8f0' }
+            },
+            x: {
+              grid: { color: 'rgba(255,255,255,0.1)' },
+              ticks: { color: '#e8e8f0' }
+            }
+          },
+          plugins: {
+            legend: { labels: { color: '#e8e8f0' } }
+          }
+        }
+      });
+      {% endif %}
     });
   </script>
 </body>
