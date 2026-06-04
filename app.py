@@ -1,14 +1,12 @@
 from flask import Flask, request, render_template, jsonify
-import PyPDF2
+from flask_cors import CORS
+from pypdf import PdfReader
+import io
 import os
 import re
 
 app = Flask(__name__)
-UPLOAD_FOLDER = "uploads"
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+CORS(app)
 
 # Extended skills database with categories
 SKILLS_DB = {
@@ -20,7 +18,6 @@ SKILLS_DB = {
     "Soft Skills": ["leadership", "communication", "teamwork", "problem solving", "agile", "scrum", "project management", "collaboration"],
 }
 
-# Keywords for scoring
 SECTION_KEYWORDS = {
     "education": ["education", "university", "college", "degree", "bachelor", "master", "phd", "b.tech", "m.tech", "b.e", "m.e"],
     "experience": ["experience", "internship", "work history", "employment", "worked at", "company", "organization"],
@@ -33,14 +30,17 @@ ACTION_VERBS = ["developed", "built", "designed", "implemented", "managed", "led
                 "optimized", "delivered", "collaborated", "architected", "launched", "analyzed", "automated"]
 
 
-def extract_text(pdf_path):
+def extract_text_from_bytes(file_bytes):
     text = ""
-    with open(pdf_path, "rb") as file:
-        reader = PyPDF2.PdfReader(file)
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
         for page in reader.pages:
             extracted = page.extract_text()
             if extracted:
                 text += extracted
+    except Exception as e:
+        print(f"Error extracting text from PDF: {e}")
+        return ""
     return text
 
 
@@ -49,14 +49,12 @@ def calculate_ats_score(text):
     score = 0
     breakdown = {}
 
-    # 1. Skills presence (30 pts)
     all_skills = [s for group in SKILLS_DB.values() for s in group]
     found_skills_count = sum(1 for skill in all_skills if skill in text_lower)
     skill_score = min(30, found_skills_count * 2)
     score += skill_score
     breakdown["Skills"] = {"score": skill_score, "max": 30, "found": found_skills_count}
 
-    # 2. Sections coverage (25 pts)
     sections_found = []
     for section, keywords in SECTION_KEYWORDS.items():
         if any(kw in text_lower for kw in keywords):
@@ -65,7 +63,6 @@ def calculate_ats_score(text):
     score += section_score
     breakdown["Sections"] = {"score": section_score, "max": 25, "found": sections_found}
 
-    # 3. Word count / length (15 pts)
     word_count = len(text.split())
     if word_count >= 400:
         length_score = 15
@@ -78,13 +75,11 @@ def calculate_ats_score(text):
     score += length_score
     breakdown["Length"] = {"score": length_score, "max": 15, "words": word_count}
 
-    # 4. Action verbs (15 pts)
     verbs_found = [v for v in ACTION_VERBS if v in text_lower]
     verb_score = min(15, len(verbs_found) * 3)
     score += verb_score
     breakdown["Action Verbs"] = {"score": verb_score, "max": 15, "found": verbs_found}
 
-    # 5. Contact info (10 pts)
     contact_score = 0
     if re.search(r'[\w.-]+@[\w.-]+\.\w+', text):
         contact_score += 5
@@ -98,10 +93,30 @@ def calculate_ats_score(text):
     return min(100, score), breakdown
 
 
-def analyze_resume(text):
+def calculate_job_match(resume_text, job_desc_text):
+    job_words = set(re.findall(r'\b\w+\b', job_desc_text.lower()))
+    resume_words = set(re.findall(r'\b\w+\b', resume_text.lower()))
+
+    matches = job_words.intersection(resume_words)
+    match_score = len(matches) / len(job_words) * 100 if job_words else 0
+
+    all_skills = [s for group in SKILLS_DB.values() for s in group]
+    job_skills = [s for s in all_skills if s in job_desc_text]
+    resume_skills = [s for s in all_skills if s in resume_text]
+    skill_matches = set(job_skills).intersection(set(resume_skills))
+    skill_match_score = len(skill_matches) / len(job_skills) * 100 if job_skills else 0
+
+    return {
+        "overall_match": min(100, match_score),
+        "skill_match": min(100, skill_match_score),
+        "matched_keywords": list(matches)[:20],
+        "missing_skills": list(set(job_skills) - set(resume_skills))
+    }
+
+
+def analyze_resume(text, job_desc=None):
     text_lower = text.lower()
 
-    # Categorized skills
     found_skills = {}
     for category, skills in SKILLS_DB.items():
         matched = [s for s in skills if s in text_lower]
@@ -111,7 +126,10 @@ def analyze_resume(text):
     word_count = len(text.split())
     ats_score, breakdown = calculate_ats_score(text)
 
-    # Suggestions
+    job_match = None
+    if job_desc:
+        job_match = calculate_job_match(text_lower, job_desc.lower())
+
     suggestions = []
 
     if word_count < 300:
@@ -148,29 +166,36 @@ def analyze_resume(text):
     if not suggestions:
         suggestions.append({"type": "success", "icon": "🌟", "text": "Great resume! Well-structured with good content coverage."})
 
-    return found_skills, word_count, suggestions, ats_score, breakdown
+    return found_skills, word_count, suggestions, ats_score, breakdown, job_match
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     result = None
+    error = None
     if request.method == "POST":
         file = request.files.get("resume")
+        job_desc = request.form.get("job_desc", "").strip()
         if file and file.filename.endswith(".pdf"):
-            path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-            file.save(path)
-            text = extract_text(path)
-            skills, count, suggestions, ats_score, breakdown = analyze_resume(text)
-            result = {
-                "skills": skills,
-                "count": count,
-                "suggestions": suggestions,
-                "ats_score": ats_score,
-                "breakdown": breakdown,
-                "filename": file.filename,
-            }
+            file_bytes = file.read()
+            text = extract_text_from_bytes(file_bytes)
+            if text.strip():
+                skills, count, suggestions, ats_score, breakdown, job_match = analyze_resume(text, job_desc if job_desc else None)
+                result = {
+                    "skills": skills,
+                    "count": count,
+                    "suggestions": suggestions,
+                    "ats_score": ats_score,
+                    "breakdown": breakdown,
+                    "job_match": job_match,
+                    "filename": file.filename,
+                }
+            else:
+                error = "Could not extract text from the PDF. Please ensure it's a valid PDF with selectable text."
+        else:
+            error = "Please upload a valid PDF file."
 
-    return render_template("index.html", result=result)
+    return render_template("index.html", result=result, error=error)
 
 
 if __name__ == "__main__":
